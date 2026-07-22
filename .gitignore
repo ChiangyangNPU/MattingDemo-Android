@@ -1,0 +1,75 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+
+# Gradle files
+.gradle/
+build/
+**/build/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Android Studio project files
+*.iml
+.idea/
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystore files (do not share signing keys)
+*.jks
+*.keystore
+
+# Log files
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IntelliJ
+*.iws
+*.ipr
+
+# Kotlin
+*.kotlin_module
+
+# Android Profiling
+*.hprof
+
+# NDK
+obj/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Buck
+buck-out/
+\.buckd/
+
+# Merge conflict files
+*.orig
+
+# Signing config
+signing.properties
