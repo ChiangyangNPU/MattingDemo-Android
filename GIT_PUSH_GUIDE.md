@@ -27,18 +27,41 @@ git push gitee main
 
 ### **3. 同时推送到两个平台**
 
-#### **方式一：分别推送（推荐）**
+#### **方式一：使用 pushall 别名（推荐）**
+
+本仓库已配置一键推送别名（仅本机生效，见下方"别名配置"）：
+
+```bash
+git pushall
+```
+
+#### **方式二：分别推送**
+
 ```bash
 git push origin main
 git push gitee main
 ```
 
-#### **方式二：使用 --all 参数**
+#### **⚠️ 注意：`git push --all` 不会同时推两个平台**
+
 ```bash
-git push --all
+git push --all   # ❌ 只推送到默认远端 origin（GitHub）！
 ```
 
-#### **方式三：配置一键推送（高级）**
+不带远端名的 `git push --all` 等价于 `git push origin --all`，只会推
+默认远程仓库。2026-08-29 曾因此导致 Gitee 落后三个提交，务必使用
+`git pushall` 或分别指定远端推送。
+
+#### **pushall 别名配置**
+
+别名存在本机 `.git/config` 里，换机器后需重新配置：
+
+```bash
+git config alias.pushall '!git push origin main && git push gitee main'
+```
+
+#### **方式三：配置远端多推送地址（高级）**
+
 ```bash
 # 配置 origin 同时推送到两个仓库
 git remote set-url --add --push origin git@github.com:ChiangyangNPU/MattingDemo-Android.git
@@ -47,6 +70,10 @@ git remote set-url --add --push origin git@gitee.com:chiangyangNPU/matting-demo-
 # 之后只需要
 git push origin main
 ```
+
+> 注意：此方式会让 `origin` 的推送地址列表替换默认值，且只对显式
+> 指定 `origin` 的推送生效，`git push --all` 仍然只推第一个地址。
+> 更推荐使用上面的 `pushall` 别名。
 
 ---
 
@@ -96,11 +123,8 @@ git add .
 # 3. 提交修改
 git commit -m "feat: 添加新功能"
 
-# 4. 推送到 GitHub
-git push origin main
-
-# 5. 推送到 Gitee
-git push gitee main
+# 4. 一键推送到 GitHub 和 Gitee
+git pushall
 ```
 
 ### **场景2：只推送到 GitHub**
@@ -124,8 +148,11 @@ git push gitee main
 ## ⚠️ 注意事项
 
 ### **1. 保持两个仓库同步**
-- 建议每次修改后都推送到两个平台
-- 确保 GitHub 和 Gitee 的代码保持一致
+- 建议每次修改后都用 `git pushall` 推送到两个平台
+- `git push --all` / `git push` 不带远端名时**只推 origin（GitHub）**，
+  不要用它替代双平台推送
+- 可以用 `git ls-remote gitee refs/heads/main` 对比本地 HEAD，
+  检查 Gitee 是否落后
 
 ### **2. 分支管理**
 - 当前主分支：`main`
@@ -221,4 +248,4 @@ git log --oneline
 ---
 
 **作者：** chiangyang
-**更新日期：** 2026-07-22
+**更新日期：** 2026-08-29
