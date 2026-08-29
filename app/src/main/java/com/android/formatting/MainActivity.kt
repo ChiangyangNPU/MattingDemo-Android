@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -125,6 +127,36 @@ fun RmbgApp(vm: MainViewModel = viewModel()) {
                     enabled = state.originalBitmap != null && !state.isProcessing,
                     modifier = Modifier.weight(1f)
                 ) { Text(if (state.isProcessing) "推理中..." else "运行抠图") }
+            }
+
+            // 抠图模型选择：切换时会先释放上一个模型再加载新模型
+            var modelMenuExpanded by remember { mutableStateOf(false) }
+            Box {
+                OutlinedButton(
+                    onClick = { modelMenuExpanded = true },
+                    enabled = !state.isProcessing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("抠图模型：${state.currentModel.displayName}")
+                    Icon(
+                        imageVector = Icons.Filled.ArrowDropDown,
+                        contentDescription = null
+                    )
+                }
+                DropdownMenu(
+                    expanded = modelMenuExpanded,
+                    onDismissRequest = { modelMenuExpanded = false }
+                ) {
+                    MattingModel.entries.forEach { m ->
+                        DropdownMenuItem(
+                            text = { Text(m.displayName) },
+                            onClick = {
+                                modelMenuExpanded = false
+                                vm.switchModel(m)
+                            }
+                        )
+                    }
+                }
             }
 
             // 原始图 & 抠图结果

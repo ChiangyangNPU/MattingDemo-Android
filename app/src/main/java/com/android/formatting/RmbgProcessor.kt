@@ -13,16 +13,35 @@ import ai.onnxruntime.TensorInfo
 import java.nio.FloatBuffer
 
 /**
- * RMBG-1.4 背景移除模型的 ONNX 推理处理器。
+ * 抠图模型定义
+ *
+ * 两个模型的预处理方式不同，[RmbgProcessor] 按模型分支处理：
+ * - RMBG-1.4: 1024 输入、直接压扁、仅 /255 归一化（套 ImageNet 会整图误判前景）
+ * - u2netp:   320 输入、直接压扁、需要 ImageNet mean/std 归一化
+ *
+ * @author chiangyang
+ */
+enum class MattingModel(
+    val assetFile: String,
+    val imagenetNorm: Boolean,
+    val displayName: String
+) {
+    RMBG_14("rmbg14.onnx", imagenetNorm = false, displayName = "RMBG-1.4"),
+    U2NETP("u2netp.onnx", imagenetNorm = true, displayName = "u²-netp 轻量")
+}
+
+/**
+ * RMBG / u2netp 背景移除模型的 ONNX 推理处理器。
  *
  * 负责加载 ONNX 模型、执行图像预处理、运行推理、解析输出 mask，
  * 并生成透明背景合成图和前景边界坐标。
  * 优先使用 NNAPI（GPU）加速，不可用时自动回退 CPU。
  *
  * @param context Android 上下文，用于从 assets 加载模型文件
+ * @param model 要加载的抠图模型
  * @author chiangyang
  */
-class RmbgProcessor(context: Context) {
+class RmbgProcessor(context: Context, private val model: MattingModel = MattingModel.RMBG_14) {
 
     private val env = OrtEnvironment.getEnvironment()
     private val session: OrtSession
@@ -30,7 +49,7 @@ class RmbgProcessor(context: Context) {
     private val inputShape: LongArray
 
     init {
-        val modelBytes = context.assets.open(MODEL_ASSET).readBytes()
+        val modelBytes = context.assets.open(model.assetFile).readBytes()
 
         // 内存优化：RMBG-1.4 单次推理激活内存即达 ~800MB（1024 输入），
         // 默认开启的 memory arena / mem pattern 会缓存并按 2 的幂扩展，
@@ -104,9 +123,11 @@ class RmbgProcessor(context: Context) {
         resized.getPixels(pixels, 0, w, 0, 0, w, h)
 
         val floatBuf = FloatBuffer.allocate(3 * w * h)
-        // 注意：RMBG-1.4 的输入预处理是"仅缩放到 0~1"，不要套用 ImageNet
-        // mean/std 归一化。实测套用会破坏模型输入分布，导致大片天空/背景
-        // 被判成前景（alpha≈255），抠图结果整图不透明。
+        // 预处理按模型分支：u2netp 需要 ImageNet mean/std 归一化；
+        // RMBG-1.4 必须仅缩放到 0~1——套用 ImageNet 归一化会破坏其
+        // 输入分布，导致大片天空/背景被判成前景（alpha≈255）。
+        val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
+        val std = floatArrayOf(0.229f, 0.224f, 0.225f)
         for (c in 0 until 3) {
             for (i in pixels.indices) {
                 val channel = when (c) {
@@ -114,7 +135,9 @@ class RmbgProcessor(context: Context) {
                     1 -> (pixels[i] shr 8 and 0xFF)   // G
                     else -> (pixels[i] and 0xFF)       // B
                 }
-                floatBuf.put(channel / 255f)
+                var v = channel / 255f
+                if (model.imagenetNorm) v = (v - mean[c]) / std[c]
+                floatBuf.put(v)
             }
         }
         floatBuf.rewind()
@@ -280,7 +303,6 @@ class RmbgProcessor(context: Context) {
 
     companion object {
         private const val TAG = "RmbgProcessor"
-        private const val MODEL_ASSET = "rmbg14.onnx"
         private const val THRESHOLD = 0.5f
         private const val DEFAULT_INPUT_SIZE = 1024
     }

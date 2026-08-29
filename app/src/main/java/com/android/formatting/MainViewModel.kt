@@ -45,14 +45,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (processor != null) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val p = RmbgProcessor(getApplication())
+                val p = RmbgProcessor(getApplication(), _uiState.value.currentModel)
                 _uiState.value = _uiState.value.copy(
-                    status = "模型已加载 (${p.executionProvider})"
+                    status = "${_uiState.value.currentModel.displayName} 已加载 (${p.executionProvider})"
                 )
                 processor = p
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     status = "模型加载失败: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /**
+     * 切换抠图模型。
+     *
+     * 先关闭（释放）当前 [RmbgProcessor] 持有的 Session 与内存，
+     * 再加载新模型。同一模型重复切换会直接跳过；加载失败时
+     * processor 置空并提示，下次推理/切换会重试。
+     *
+     * @param model 目标模型
+     * @author chiangyang
+     */
+    fun switchModel(model: MattingModel) {
+        if (model == _uiState.value.currentModel && processor != null) return
+        _uiState.value = _uiState.value.copy(
+            currentModel = model,
+            isProcessing = true,
+            status = "正在切换模型：${model.displayName}（释放旧模型并加载）..."
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                processor?.close()
+                processor = null
+                val p = RmbgProcessor(getApplication(), model)
+                processor = p
+                _uiState.value = _uiState.value.copy(
+                    isProcessing = false,
+                    status = "${model.displayName} 已加载 (${p.executionProvider})"
+                )
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "switchModel failed", e)
+                _uiState.value = _uiState.value.copy(
+                    isProcessing = false,
+                    status = "模型切换失败: ${e.message}"
                 )
             }
         }
@@ -168,6 +205,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val alphaMaskBitmap: Bitmap? = null,
         val bbox: RmbgProcessor.BoundingBox? = null,
         val isProcessing: Boolean = false,
+        val currentModel: MattingModel = MattingModel.RMBG_14,
         val status: String = "正在初始化模型..."
     )
 }
