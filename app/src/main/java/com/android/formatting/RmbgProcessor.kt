@@ -2,6 +2,10 @@ package com.android.formatting
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -28,14 +32,27 @@ class RmbgProcessor(context: Context) {
     init {
         val modelBytes = context.assets.open(MODEL_ASSET).readBytes()
 
+        // 内存优化：RMBG-1.4 单次推理激活内存即达 ~800MB（1024 输入），
+        // 默认开启的 memory arena / mem pattern 会缓存并按 2 的幂扩展，
+        // 导致多次推理峰值持续累计（实测 889MB -> 1305MB）。
+        // 两者都关闭后峰值稳定，不再随推理次数增长。
+        // （与 ForWatermark / ForCamera2 JNI 侧的 SessionOptions 配置对齐）
+        fun applyMemoryOptions(opts: OrtSession.SessionOptions) {
+            opts.setCPUArenaAllocator(false)
+            opts.setMemoryPatternOptimization(false)
+        }
+
         // 尝试 NNAPI（GPU）加速，失败则回退 CPU
         val (s, provider) = try {
             val opts = OrtSession.SessionOptions()
             opts.addNnapi()
+            applyMemoryOptions(opts)
             Pair(env.createSession(modelBytes, opts), "NNAPI (GPU)")
         } catch (e: Exception) {
             android.util.Log.w(TAG, "NNAPI unavailable, falling back to CPU", e)
-            Pair(env.createSession(modelBytes), "CPU")
+            val opts = OrtSession.SessionOptions()
+            applyMemoryOptions(opts)
+            Pair(env.createSession(modelBytes, opts), "CPU")
         }
         session = s
         executionProvider = provider
@@ -151,22 +168,28 @@ class RmbgProcessor(context: Context) {
         }
         alphaMask.setPixels(maskPixels, 0, maskW, 0, 0, maskW, maskH)
 
-        // 6. 合成透明背景图
-        val scaledAlpha = Bitmap.createScaledBitmap(alphaMask, origW, origH, true)
+        // 6. 合成透明背景图：把 mask 灰度像素原地转成"白色 + alpha 通道"
+        // 的载体位图，再用 DST_IN 与原图混合。Porter-Duff 在预乘空间运算，
+        // 输出 color×a/255、alpha=a，与逐像素预乘数学等价，
+        // 省掉三个全尺寸像素数组（1200 万像素照片约省 144MB）
+        val scaledMask: Bitmap
         val result = Bitmap.createBitmap(origW, origH, Bitmap.Config.ARGB_8888)
-        val srcPixels = IntArray(origW * origH)
-        val alphaPixels = IntArray(origW * origH)
-        bitmap.getPixels(srcPixels, 0, origW, 0, 0, origW, origH)
-        scaledAlpha.getPixels(alphaPixels, 0, origW, 0, 0, origW, origH)
-        val resultPixels = IntArray(origW * origH)
-        for (i in srcPixels.indices) {
-            val a = alphaPixels[i] and 0xFF
-            val r = (srcPixels[i] shr 16 and 0xFF) * a / 255
-            val g = (srcPixels[i] shr 8 and 0xFF) * a / 255
-            val b = (srcPixels[i] and 0xFF) * a / 255
-            resultPixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+        Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888).let { carrier ->
+            for (i in maskPixels.indices) {
+                maskPixels[i] = ((maskPixels[i] and 0xFF) shl 24) or 0x00FFFFFF
+            }
+            carrier.setPixels(maskPixels, 0, maskW, 0, 0, maskW, maskH)
+            scaledMask = Bitmap.createScaledBitmap(carrier, origW, origH, true)
+            carrier.recycle()
         }
-        result.setPixels(resultPixels, 0, origW, 0, 0, origW, origH)
+
+        val resultCanvas = Canvas(result)
+        resultCanvas.drawBitmap(bitmap, 0f, 0f, null)
+        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        }
+        resultCanvas.drawBitmap(scaledMask, 0f, 0f, maskPaint)
+        scaledMask.recycle()
 
         // 7. 计算前景边界坐标
         val bbox = findBoundingBox(maskData, maskW, maskH, origW, origH)
