@@ -61,9 +61,9 @@ class RmbgProcessor(context: Context) {
      *
      * 处理流程：
      * 1. 将输入图像 resize 到模型要求的尺寸（默认 1024x1024）
-     * 2. RGB 通道归一化（ImageNet mean/std）
+     * 2. 像素值仅缩放到 0~1（RMBG-1.4 不需要 ImageNet mean/std 归一化）
      * 3. 创建 ONNX 输入张量并执行推理
-     * 4. 解析输出 mask，生成灰度 Alpha Mask
+     * 4. 解析输出 mask，min-max 归一化后经阈值 + smoothstep 生成 Alpha Mask
      * 5. 将 Alpha Mask 缩放回原图尺寸，合成透明背景图
      * 6. 计算前景物体的边界坐标
      *
@@ -87,8 +87,9 @@ class RmbgProcessor(context: Context) {
         resized.getPixels(pixels, 0, w, 0, 0, w, h)
 
         val floatBuf = FloatBuffer.allocate(3 * w * h)
-        val mean = floatArrayOf(0.485f, 0.456f, 0.406f)
-        val std = floatArrayOf(0.229f, 0.224f, 0.225f)
+        // 注意：RMBG-1.4 的输入预处理是"仅缩放到 0~1"，不要套用 ImageNet
+        // mean/std 归一化。实测套用会破坏模型输入分布，导致大片天空/背景
+        // 被判成前景（alpha≈255），抠图结果整图不透明。
         for (c in 0 until 3) {
             for (i in pixels.indices) {
                 val channel = when (c) {
@@ -96,7 +97,7 @@ class RmbgProcessor(context: Context) {
                     1 -> (pixels[i] shr 8 and 0xFF)   // G
                     else -> (pixels[i] and 0xFF)       // B
                 }
-                floatBuf.put((channel / 255f - mean[c]) / std[c])
+                floatBuf.put(channel / 255f)
             }
         }
         floatBuf.rewind()
@@ -121,16 +122,36 @@ class RmbgProcessor(context: Context) {
         inputTensor.close()
         output.close()
 
-        // 4. 生成 alpha mask（灰度）
+        // 4. 后处理：min-max 归一化（RMBG 官方标准步骤）
+        // 模型 sigmoid 输出动态范围往往不满 0~1，直接取值会让大片背景
+        // 保留中间 alpha；归一化后阈值以下清零（背景不再发灰），阈值以上
+        // 用 smoothstep 增益，既压掉雾状区域又保留平滑边缘
+        var mn = Float.MAX_VALUE
+        var mx = -Float.MAX_VALUE
+        for (v in maskData) {
+            if (v < mn) mn = v
+            if (v > mx) mx = v
+        }
+        val range = (mx - mn).coerceAtLeast(1e-6f)
+        for (i in maskData.indices) {
+            maskData[i] = (maskData[i] - mn) / range
+        }
+
+        // 5. 生成 alpha mask（灰度），同步生成透明背景图
         val alphaMask = Bitmap.createBitmap(maskW, maskH, Bitmap.Config.ARGB_8888)
         val maskPixels = IntArray(maskW * maskH)
         for (i in maskData.indices) {
-            val v = (maskData[i].coerceIn(0f, 1f) * 255).toInt()
-            maskPixels[i] = 0xFF shl 24 or (v shl 16) or (v shl 8) or v
+            val v = maskData[i]
+            val a = if (v <= THRESHOLD) 0 else {
+                var t = (v - THRESHOLD) / (1f - THRESHOLD)
+                t = t * t * (3f - 2f * t)
+                (t.coerceAtMost(1f) * 255f).toInt()
+            }
+            maskPixels[i] = 0xFF shl 24 or (a shl 16) or (a shl 8) or a
         }
         alphaMask.setPixels(maskPixels, 0, maskW, 0, 0, maskW, maskH)
 
-        // 5. 合成透明背景图
+        // 6. 合成透明背景图
         val scaledAlpha = Bitmap.createScaledBitmap(alphaMask, origW, origH, true)
         val result = Bitmap.createBitmap(origW, origH, Bitmap.Config.ARGB_8888)
         val srcPixels = IntArray(origW * origH)
@@ -147,7 +168,7 @@ class RmbgProcessor(context: Context) {
         }
         result.setPixels(resultPixels, 0, origW, 0, 0, origW, origH)
 
-        // 6. 计算前景边界坐标
+        // 7. 计算前景边界坐标
         val bbox = findBoundingBox(maskData, maskW, maskH, origW, origH)
         val totalTime = System.currentTimeMillis() - startTime
         android.util.Log.i(TAG, "process: total done in ${totalTime}ms, mask=${maskW}x${maskH}, bbox=$bbox")
