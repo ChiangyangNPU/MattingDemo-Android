@@ -1,6 +1,6 @@
 # MattingDemo — Android Background Removal
 
-[中文文档](README-zh.md)
+[中文文档](README-ZH.md)
 
 ## Overview
 
